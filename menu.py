@@ -1,15 +1,14 @@
 import requests
 import urllib3
+import uuid
 
-# Отключаем предупреждения о сертификатах (для GigaChat это норма)
+# Отключаем предупреждения SSL (для GigaChat это важно)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 GIGACHAT_AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
 GIGACHAT_API_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
 
-
 def collect_available_products(shopping_list_df, stock_df):
-    """Собирает все продукты."""
     products = []
     if not stock_df.empty:
         products.extend(stock_df['name'].tolist())
@@ -17,9 +16,7 @@ def collect_available_products(shopping_list_df, stock_df):
         products.extend(shopping_list_df['name'].tolist())
     return sorted(set(products))
 
-
 def generate_menu_local(shopping_list_df, stock_df):
-    """Локальное меню (без ИИ)."""
     available_products = collect_available_products(shopping_list_df, stock_df)
     breakfasts, lunches, dinners = [], [], []
 
@@ -41,7 +38,6 @@ def generate_menu_local(shopping_list_df, stock_df):
         menu.append({'day': day, 'breakfast': b, 'lunch': l, 'dinner': d})
     return menu
 
-
 def build_menu_prompt(products):
     products_text = "\n".join([f"- {p}" for p in products])
     return f"""Ты — помощник по питанию. Отвечай только на русском языке.
@@ -53,7 +49,6 @@ def build_menu_prompt(products):
 Обед: [блюдо] (~[ккал] ккал, Б:[б] Ж:[ж] У:[у]) — [польза]
 Ужин: [блюдо] (~[ккал] ккал, Б:[б] Ж:[ж] У:[у]) — [польза]
 ... (и так для 3 дней)"""
-
 
 def parse_menu_text(menu_text):
     menu = []
@@ -75,35 +70,34 @@ def parse_menu_text(menu_text):
             elif 'ужин' in meal_type: menu[-1]['dinner'] = dish
     return menu if menu else None
 
-
 def get_gigachat_token(auth_key):
-    """Получает временный токен доступа по Authorization Key."""
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept": "application/json",
-        "RqUID": "12345678-90ab-cdef-1234-567890abcdef", 
+        "RqUID": str(uuid.uuid4()),
         "Authorization": f"Basic {auth_key}"
     }
     data = {"scope": "GIGACHAT_API_PERS"}
     
     try:
-        # verify=False важно для GigaChat API
-        r = requests.post(GIGACHAT_AUTH_URL, headers=headers, data=data, verify=False, timeout=10)
+        # verify=False критически важно для Сбера
+        r = requests.post(GIGACHAT_AUTH_URL, headers=headers, data=data, verify=False, timeout=15)
         if r.status_code == 200:
-            return r.json().get("access_token")
+            return r.json().get("access_token"), None
+        else:
+            return None, f"Ошибка авторизации ({r.status_code}): {r.text[:200]}"
     except Exception as e:
-        print(f"Ошибка авторизации GigaChat: {e}")
-    return None
-
+        return None, f"Ошибка сети/SSL при авторизации: {str(e)}"
 
 def generate_menu_gigachat(shopping_list_df, stock_df, auth_key):
-    if not auth_key: return None
+    if not auth_key:
+        return None, "Ключ GIGACHAT_AUTH_KEY не найден в секретах!"
     
     products = collect_available_products(shopping_list_df, stock_df)
-    if not products: return None
+    if not products: return None, "Нет продуктов для меню"
 
-    token = get_gigachat_token(auth_key)
-    if not token: return None
+    token, error = get_gigachat_token(auth_key)
+    if not token: return None, error
 
     headers = {
         "Content-Type": "application/json",
@@ -112,30 +106,30 @@ def generate_menu_gigachat(shopping_list_df, stock_df, auth_key):
     }
     
     body = {
-        "model": "GigaChat", 
+        "model": "GigaChat",
         "messages": [{"role": "user", "content": build_menu_prompt(products)}],
         "temperature": 0.7,
         "max_tokens": 2000
     }
 
     try:
-        # verify=False обязательно
         r = requests.post(GIGACHAT_API_URL, headers=headers, json=body, verify=False, timeout=30)
         if r.status_code == 200:
             content = r.json()["choices"][0]["message"]["content"]
-            return parse_menu_text(content)
+            return parse_menu_text(content), None
         else:
-            print(f"Ошибка GigaChat API: {r.status_code} {r.text}")
+            return None, f"Ошибка API GigaChat ({r.status_code}): {r.text[:200]}"
     except Exception as e:
-        print(f"Нет связи с GigaChat: {e}")
-    
-    return None
-
+        return None, f"Ошибка при генерации: {str(e)}"
 
 def generate_menu(shopping_list_df, stock_df, use_llm=False, api_key=None, folder_id=None):
     if use_llm:
-        giga_menu = generate_menu_gigachat(shopping_list_df, stock_df, api_key)
+        giga_menu, error_msg = generate_menu_gigachat(shopping_list_df, stock_df, api_key)
         if giga_menu:
             return giga_menu, "GigaChat"
+        else:
+            # Возвращаем локальное меню, но в source пишем ошибку
+            local_menu = generate_menu_local(shopping_list_df, stock_df)
+            return local_menu, f"ERROR: {error_msg}"
     
     return generate_menu_local(shopping_list_df, stock_df), "Локальный"
