@@ -26,23 +26,21 @@ def check_database():
     return os.path.exists(DB_NAME)
 
 
-def get_yandex_credentials():
+def get_gigachat_credentials():
     """
-    Достаёт ключ Yandex из переменных окружения
+    Достаёт ключ GigaChat из переменных окружения
     или из .streamlit/secrets.toml.
-    Если ключа нет, возвращает (None, None).
+    Возвращает (auth_key, scope_placeholder).
     """
-    api_key = os.environ.get("YANDEX_API_KEY")
-    folder_id = os.environ.get("YANDEX_FOLDER_ID")
+    api_key = os.environ.get("GIGACHAT_AUTH_KEY")
 
-    if api_key and folder_id:
-        return api_key, folder_id
+    if api_key:
+        return api_key, "gigachat"
 
     if st.secrets.load_if_toml_exists():
-        api_key = st.secrets.get("YANDEX_API_KEY")
-        folder_id = st.secrets.get("YANDEX_FOLDER_ID")
+        api_key = st.secrets.get("GIGACHAT_AUTH_KEY")
 
-    return api_key, folder_id
+    return api_key, "gigachat"
 
 
 def show_nutrition_chart(protein, fat, carbs):
@@ -192,7 +190,7 @@ def show_recommendation(user_id, stock_df, default_budget):
         step=100.0,
     )
 
-    use_llm = st.checkbox("Составить меню на 3 дня")
+    use_llm = st.checkbox("Составить меню на 3 дня (GigaChat)")
 
     # --- Выбор сценария питания ---
     st.markdown("### Стратегия питания")
@@ -231,11 +229,11 @@ def show_recommendation(user_id, stock_df, default_budget):
             st.session_state["rec_menu"] = None
             st.session_state["rec_menu_source"] = ""
         else:
-            api_key, folder_id = get_yandex_credentials()
+            auth_key, _ = get_gigachat_credentials()
 
             if use_llm:
                 menu, menu_source = generate_menu(
-                    result_df, stock_df, True, api_key, folder_id
+                    result_df, stock_df, True, auth_key, None
                 )
             else:
                 menu, menu_source = generate_menu(
@@ -314,8 +312,8 @@ def show_recommendation(user_id, stock_df, default_budget):
             st.write(f"- Обед: {day_menu['lunch']}")
             st.write(f"- Ужин: {day_menu['dinner']}")
 
-        if menu_source == "YandexGPT":
-            st.caption("Меню сгенерировано нейросетью")
+        if menu_source == "GigaChat":
+            st.caption("Меню сгенерировано нейросетью GigaChat")
         else:
             st.caption("Меню составлено по правилам")
 
