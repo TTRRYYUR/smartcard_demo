@@ -1,7 +1,7 @@
-
 import os
 
 import streamlit as st
+import matplotlib.pyplot as plt
 
 from db_service import (
     get_users,
@@ -43,6 +43,32 @@ def get_yandex_credentials():
         folder_id = st.secrets.get("YANDEX_FOLDER_ID")
 
     return api_key, folder_id
+
+
+def show_nutrition_chart(protein, fat, carbs):
+    """Рисует круговую диаграмму соотношения Б/Ж/У."""
+    total = protein + fat + carbs
+
+    if total <= 0:
+        st.info("Недостаточно данных для диаграммы КБЖУ.")
+        return
+
+    labels = ['Белки', 'Жиры', 'Углеводы']
+    sizes = [protein, fat, carbs]
+    colors = ['#ff6b6b', '#ffd93d', '#6bcB77']
+
+    fig, ax = plt.subplots(figsize=(4, 4))
+    ax.pie(
+        sizes,
+        labels=labels,
+        colors=colors,
+        autopct='%1.0f%%',
+        startangle=90,
+        textprops={'fontsize': 11}
+    )
+    ax.set_title('Соотношение Б/Ж/У в корзине', fontsize=12)
+
+    st.pyplot(fig)
 
 
 def show_overview(user_name, budget_df, stock_df, purchases_df):
@@ -151,7 +177,6 @@ def show_recommendation(user_id, stock_df, default_budget):
         "Продукты ранжируются по оценке и добавляются, пока хватает бюджета."
     )
 
-    # Предиктивная аналитика: что могло закончиться
     finished = predict_finished_products(user_id)
 
     if finished:
@@ -213,6 +238,12 @@ def show_recommendation(user_id, stock_df, default_budget):
 
     st.markdown("### Результат")
 
+    # --- Прогресс-бар бюджета ---
+    ratio = total_price / budget_used if budget_used > 0 else 0.0
+    ratio = min(ratio, 1.0)
+
+    st.progress(ratio, text=f"Использовано бюджета: {total_price:.0f} / {budget_used:.0f} ₽")
+
     col1, col2 = st.columns(2)
     col1.metric("Итоговая цена", f"{total_price:.2f} ₽")
     col2.metric(
@@ -221,11 +252,24 @@ def show_recommendation(user_id, stock_df, default_budget):
         f"остаток {budget_used - total_price:.2f} ₽",
     )
 
-    col3, col4, col5, col6 = st.columns(4)
-    col3.metric("Калории", f"{nutrition.get('total_calories', 0):.0f}")
-    col4.metric("Белки", f"{nutrition.get('total_protein', 0):.1f} г")
-    col5.metric("Жиры", f"{nutrition.get('total_fat', 0):.1f} г")
-    col6.metric("Углеводы", f"{nutrition.get('total_carbs', 0):.1f} г")
+    # --- Метрики КБЖУ + круговая диаграмма ---
+    protein = nutrition.get('total_protein', 0)
+    fat = nutrition.get('total_fat', 0)
+    carbs = nutrition.get('total_carbs', 0)
+
+    st.markdown("### Питание корзины")
+
+    col_a, col_b = st.columns([1, 1])
+
+    with col_a:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Калории", f"{nutrition.get('total_calories', 0):.0f}")
+        c2.metric("Белки", f"{protein:.1f} г")
+        c3.metric("Жиры", f"{fat:.1f} г")
+        c4.metric("Углеводы", f"{carbs:.1f} г")
+
+    with col_b:
+        show_nutrition_chart(protein, fat, carbs)
 
     display_df = result_df[["name", "category", "unit", "price", "reason"]].copy()
     display_df.columns = ["Продукт", "Категория", "Ед.", "Цена", "Почему"]
@@ -313,13 +357,14 @@ def main():
     )
 
     if not check_database():
-        st.error("База данных smartcart.db не найдена. Запусти: python create_db.py")
-        return
+        with st.spinner("Создаю базу данных..."):
+            from db_setup import create_database
+            create_database()
 
     users_df = get_users()
 
     if users_df.empty:
-        st.warning("В базе нет пользователей. Запусти: python create_db.py")
+        st.warning("В базе нет пользователей. Запусти: python db_setup.py")
         return
 
     st.sidebar.header("Пользователь")
