@@ -4,34 +4,46 @@ from db_service import get_products, get_stock
 from predictor import get_history_scores, predict_finished_products
 
 
-# Продукты, которые имеет смысл покупать в большем количестве.
-# Для них разрешаем увеличивать количество, если остался бюджет.
 SCALABLE_PRODUCTS = {
-    "Молоко",
-    "Яйца",
-    "Куриное филе",
-    "Хлеб",
-    "Картофель",
-    "Бананы",
-    "Яблоки",
-    "Рис",
-    "Гречка",
-    "Макароны",
-    "Кефир",
-    "Творог",
-    "Морковь",
-    "Помидоры",
+    "Молоко", "Яйца", "Куриное филе", "Хлеб", "Картофель",
+    "Бананы", "Яблоки", "Рис", "Гречка", "Макароны",
+    "Кефир", "Творог", "Морковь", "Помидоры",
 }
 
-# Максимальное количество единиц одного продукта в корзине.
 MAX_QUANTITY_PER_PRODUCT = 4
+
+# Сценарии: как распределяются веса и какой нутриент в приоритете
+SCENARIOS = {
+    "balanced": {
+        "label": "⚖️ Сбалансированный",
+        "need_w": 0.4, "history_w": 0.3, "value_w": 0.3,
+        "cal_w": 0.25, "protein_w": 0.25, "fat_w": 0.25, "carbs_w": 0.25,
+    },
+    "protein": {
+        "label": "🥩 Белковый",
+        "need_w": 0.3, "history_w": 0.2, "value_w": 0.5,
+        "cal_w": 0.1, "protein_w": 0.7, "fat_w": 0.1, "carbs_w": 0.1,
+    },
+    "calories": {
+        "label": "⚡ Калорийный",
+        "need_w": 0.3, "history_w": 0.2, "value_w": 0.5,
+        "cal_w": 0.7, "protein_w": 0.1, "fat_w": 0.1, "carbs_w": 0.1,
+    },
+    "economy": {
+        "label": "💰 Экономный",
+        "need_w": 0.5, "history_w": 0.3, "value_w": 0.2,
+        "cal_w": 0.25, "protein_w": 0.25, "fat_w": 0.25, "carbs_w": 0.25,
+        "economy_mode": True,
+    },
+}
+
+
+def get_scenario(scenario_key):
+    """Возвращает настройки сценария по ключу."""
+    return SCENARIOS.get(scenario_key, SCENARIOS["balanced"])
 
 
 def calculate_need_score(product_name, stock_df):
-    """
-    Считает, насколько продукт нужен прямо сейчас.
-    Если есть дома - низкая оценка, если нет - высокая.
-    """
     if stock_df.empty:
         return 1.0
 
@@ -50,43 +62,44 @@ def calculate_need_score(product_name, stock_df):
         return 0.8
 
 
-def calculate_value_score(row):
+def calculate_value_score(row, scenario):
     """
-    Считает выгоду продукта: питательность за рубль.
-    Используем калории и белки.
+    Считает выгоду продукта с учётом сценария.
+    В экономном режиме — обратная цена (дешевле = лучше).
+    В остальных — выбранный нутриент за рубль.
     """
     price = row['price']
 
     if price <= 0:
         return 0.0
 
-    calories = row['calories']
-    protein = row['protein']
+    if scenario.get("economy_mode"):
+        return 1.0 / price
 
-    score = (0.5 * calories + 0.5 * protein * 10) / price
+    value = (
+        scenario["cal_w"] * row['calories']
+        + scenario["protein_w"] * row['protein'] * 10
+        + scenario["fat_w"] * row['fat'] * 9
+        + scenario["carbs_w"] * row['carbs'] * 4
+    )
 
-    return score
+    return value / price
 
 
-def calculate_product_scores(products_df, stock_df, history_scores):
-    """
-    Считает итоговую оценку для каждого продукта.
-    """
+def calculate_product_scores(products_df, stock_df, history_scores, scenario):
     scores = []
 
     for _, row in products_df.iterrows():
         product_name = row['name']
 
         need_score = calculate_need_score(product_name, stock_df)
-
         history_score = history_scores.get(product_name, 0.0)
-
-        value_score = calculate_value_score(row)
+        value_score = calculate_value_score(row, scenario)
 
         final_score = (
-            0.4 * need_score +
-            0.3 * history_score +
-            0.3 * value_score
+            scenario["need_w"] * need_score
+            + scenario["history_w"] * history_score
+            + scenario["value_w"] * value_score
         )
 
         scores.append({
@@ -115,16 +128,15 @@ def calculate_product_scores(products_df, stock_df, history_scores):
         scores_df['value_score_normalized'] = 0
 
     scores_df['final_score'] = (
-        0.4 * scores_df['need_score'] +
-        0.3 * scores_df['history_score'] +
-        0.3 * scores_df['value_score_normalized']
+        scenario["need_w"] * scores_df['need_score']
+        + scenario["history_w"] * scores_df['history_score']
+        + scenario["value_w"] * scores_df['value_score_normalized']
     )
 
     return scores_df
 
 
 def build_reason(row, finished_products):
-    """Формирует текстовое объяснение, почему продукт в списке."""
     reasons = []
 
     if row['need_score'] >= 0.8:
@@ -146,7 +158,6 @@ def build_reason(row, finished_products):
 
 
 def make_item(row, quantity, reason):
-    """Собирает одну позицию корзины с учётом количества."""
     price = row['price']
 
     return {
@@ -167,52 +178,7 @@ def make_item(row, quantity, reason):
     }
 
 
-def scale_up_basket(selected, remaining_budget):
-    """
-    Распределяет оставшийся бюджет на увеличение количества
-    ходовых товаров. Возвращает обновлённый список и новый остаток.
-    """
-    if remaining_budget <= 0:
-        return selected, remaining_budget
-
-    # Индексы позиций, которые можно масштабировать
-    scalable_indices = [
-        i for i, item in enumerate(selected)
-        if item['name'] in SCALABLE_PRODUCTS
-    ]
-
-    if not scalable_indices:
-        return selected, remaining_budget
-
-    # Добавляем по кругу по 1 штуке, пока хватает бюджета и не достигли лимита
-    cursor = 0
-
-    while remaining_budget > 0 and cursor < len(scalable_indices) * MAX_QUANTITY_PER_PRODUCT:
-        idx = scalable_indices[cursor % len(scalable_indices)]
-        item = selected[idx]
-
-        if item['quantity'] >= MAX_QUANTITY_PER_PRODUCT:
-            cursor += 1
-            continue
-
-        unit_price = item['price']
-
-        if unit_price <= 0 or remaining_budget < unit_price:
-            cursor += 1
-            continue
-
-        # Увеличиваем количество на 1
-        new_quantity = item['quantity'] + 1
-        selected[idx] = make_item_from_existing(item, new_quantity)
-
-        remaining_budget -= unit_price
-        cursor += 1
-
-    return selected, remaining_budget
-
-
 def make_item_from_existing(item, new_quantity):
-    """Пересобирает позицию из уже существующей с новым количеством."""
     unit_price = item['price'] / item['quantity'] if item['quantity'] > 0 else item['price']
     unit_calories = item['calories'] / item['quantity'] if item['quantity'] > 0 else item['calories']
     unit_protein = item['protein'] / item['quantity'] if item['quantity'] > 0 else item['protein']
@@ -237,11 +203,46 @@ def make_item_from_existing(item, new_quantity):
     }
 
 
-def build_shopping_list(user_id, budget):
+def scale_up_basket(selected, remaining_budget):
+    if remaining_budget <= 0:
+        return selected, remaining_budget
+
+    scalable_indices = [
+        i for i, item in enumerate(selected)
+        if item['name'] in SCALABLE_PRODUCTS
+    ]
+
+    if not scalable_indices:
+        return selected, remaining_budget
+
+    cursor = 0
+
+    while remaining_budget > 0 and cursor < len(scalable_indices) * MAX_QUANTITY_PER_PRODUCT:
+        idx = scalable_indices[cursor % len(scalable_indices)]
+        item = selected[idx]
+
+        if item['quantity'] >= MAX_QUANTITY_PER_PRODUCT:
+            cursor += 1
+            continue
+
+        unit_price = item['price']
+
+        if unit_price <= 0 or remaining_budget < unit_price:
+            cursor += 1
+            continue
+
+        new_quantity = item['quantity'] + 1
+        selected[idx] = make_item_from_existing(item, new_quantity)
+
+        remaining_budget -= unit_price
+        cursor += 1
+
+    return selected, remaining_budget
+
+
+def build_shopping_list(user_id, budget, scenario_key="balanced"):
     """
-    Главная функция: собирает список покупок в рамках бюджета.
-    Сначала набирает базовую корзину, потом догружает количество
-    ходовых товаров на оставшийся бюджет.
+    Собирает список покупок с учётом выбранного сценария питания.
     """
     products_df = get_products()
     stock_df = get_stock(user_id)
@@ -249,13 +250,14 @@ def build_shopping_list(user_id, budget):
     history_scores = get_history_scores(user_id)
     finished_products = predict_finished_products(user_id)
 
+    scenario = get_scenario(scenario_key)
+
     if products_df.empty:
         return pd.DataFrame(), 0.0, {}
 
-    scores_df = calculate_product_scores(products_df, stock_df, history_scores)
+    scores_df = calculate_product_scores(products_df, stock_df, history_scores, scenario)
     scores_df = scores_df.sort_values('final_score', ascending=False)
 
-    # --- Этап 1: базовая корзина (по 1 штуке, пока хватает бюджета) ---
     selected = []
     total_price = 0.0
 
@@ -270,13 +272,11 @@ def build_shopping_list(user_id, budget):
     if not selected:
         return pd.DataFrame(), 0.0, {}
 
-    # --- Этап 2: догрузка количества ходовых товаров на остаток ---
     remaining_budget = budget - total_price
     selected, remaining_budget = scale_up_basket(selected, remaining_budget)
 
     result_df = pd.DataFrame(selected)
 
-    # Итоговая цена после догрузки
     final_total = result_df['total'].sum()
 
     nutrition = {
