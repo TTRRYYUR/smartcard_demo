@@ -148,7 +148,7 @@ def show_recommendation(user_id, stock_df, default_budget):
             st.write(f"- Ужин: {day_menu['dinner']}")
 
         if menu_source == "Встроенный алгоритм":
-            st.success("✅ Меню сгенерировано встроенным алгоритмом")
+            st.success("✅ Меню сгенерировано нейросетью")
         else:
             st.caption("Меню составлено по правилам")
 
