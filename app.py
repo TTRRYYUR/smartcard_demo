@@ -15,13 +15,6 @@ DB_NAME = "smartcart.db"
 def check_database():
     return os.path.exists(DB_NAME)
 
-def get_gigachat_credentials():
-    api_key = os.environ.get("GIGACHAT_AUTH_KEY")
-    if api_key: return api_key, "gigachat"
-    if st.secrets.load_if_toml_exists():
-        api_key = st.secrets.get("GIGACHAT_AUTH_KEY")
-    return api_key, "gigachat"
-
 def show_nutrition_chart(protein, fat, carbs):
     total = protein + fat + carbs
     if total <= 0: return
@@ -88,7 +81,7 @@ def show_recommendation(user_id, stock_df, default_budget):
     if finished: st.info("По статистике могло закончиться: " + ", ".join(finished))
 
     budget_input = st.number_input("Бюджет на список", min_value=0.0, value=float(default_budget), step=100.0)
-    use_llm = st.checkbox("Составить меню на 3 дня (GigaChat)")
+    use_llm = st.checkbox("Составить меню на 3 дня")
 
     st.markdown("### Стратегия питания")
     scenario_options = {key: cfg["label"] for key, cfg in SCENARIOS.items()}
@@ -106,8 +99,8 @@ def show_recommendation(user_id, stock_df, default_budget):
             st.warning("Не удалось собрать список.")
             st.session_state["rec_menu"] = None
         else:
-            auth_key, _ = get_gigachat_credentials()
-            menu, menu_source = generate_menu(result_df, stock_df, use_llm, auth_key, None)
+            # Генерируем меню всегда локально для скорости и надёжности
+            menu, menu_source = generate_menu(result_df, stock_df, use_llm, None, None)
             st.session_state["rec_menu"] = menu
             st.session_state["rec_menu_source"] = menu_source
 
@@ -154,12 +147,10 @@ def show_recommendation(user_id, stock_df, default_budget):
             st.write(f"- Обед: {day_menu['lunch']}")
             st.write(f"- Ужин: {day_menu['dinner']}")
 
-        if menu_source == "GigaChat":
-            st.success("✅ Меню сгенерировано нейросетью GigaChat")
-        elif "ERROR" in menu_source:
-            st.error(f"⚠️ GigaChat недоступен. Использованы правила.\n\n**Диагностика:** {menu_source.replace('ERROR: ', '')}")
+        if menu_source == "Встроенный алгоритм":
+            st.success("✅ Меню сгенерировано встроенным алгоритмом")
         else:
-            st.caption("Меню составлено по правилам (локально)")
+            st.caption("Меню составлено по правилам")
 
     if st.button("Сохранить список в базу"):
         items_to_save = [{
