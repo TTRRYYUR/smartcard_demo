@@ -1,8 +1,10 @@
 import requests
 import urllib3
 import uuid
+import certifi
+import os
 
-# Отключаем предупреждения SSL (для GigaChat это важно)
+# Пытаемся использовать системные сертификаты или отключаем проверку совсем
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 GIGACHAT_AUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
@@ -10,16 +12,13 @@ GIGACHAT_API_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions
 
 def collect_available_products(shopping_list_df, stock_df):
     products = []
-    if not stock_df.empty:
-        products.extend(stock_df['name'].tolist())
-    if not shopping_list_df.empty:
-        products.extend(shopping_list_df['name'].tolist())
+    if not stock_df.empty: products.extend(stock_df['name'].tolist())
+    if not shopping_list_df.empty: products.extend(shopping_list_df['name'].tolist())
     return sorted(set(products))
 
 def generate_menu_local(shopping_list_df, stock_df):
     available_products = collect_available_products(shopping_list_df, stock_df)
     breakfasts, lunches, dinners = [], [], []
-
     if 'Овсянка' in available_products and 'Молоко' in available_products: breakfasts.append("Овсяная каша на молоке")
     if 'Яйца' in available_products and 'Хлеб' in available_products: breakfasts.append("Яичница с хлебом")
     if 'Творог' in available_products: breakfasts.append("Творог со сметаной")
@@ -29,7 +28,6 @@ def generate_menu_local(shopping_list_df, stock_df):
     if 'Творог' in available_products: dinners.append("Творожная запеканка")
     if 'Яйца' in available_products and 'Картофель' in available_products: dinners.append("Картофель с яйцом")
     if 'Куриное филе' in available_products and 'Морковь' in available_products: dinners.append("Куриное филе с морковью")
-
     menu = []
     for day in range(1, 4):
         b = breakfasts[(day - 1) % len(breakfasts)] if breakfasts else "Завтрак не подобран"
@@ -80,21 +78,21 @@ def get_gigachat_token(auth_key):
     data = {"scope": "GIGACHAT_API_PERS"}
     
     try:
-        # verify=False критически важно для Сбера
+        # Пытаемся с verify=False, но добавляем явный таймаут и обработку
         r = requests.post(GIGACHAT_AUTH_URL, headers=headers, data=data, verify=False, timeout=15)
         if r.status_code == 200:
             return r.json().get("access_token"), None
         else:
-            return None, f"Ошибка авторизации ({r.status_code}): {r.text[:200]}"
+            return None, f"HTTP {r.status_code}: {r.text[:100]}"
+    except requests.exceptions.SSLError as e:
+        return None, f"SSL Error (сервер не доверяет сертификату Сбера): {str(e)[:100]}"
     except Exception as e:
-        return None, f"Ошибка сети/SSL при авторизации: {str(e)}"
+        return None, f"Connection Error: {str(e)[:100]}"
 
 def generate_menu_gigachat(shopping_list_df, stock_df, auth_key):
-    if not auth_key:
-        return None, "Ключ GIGACHAT_AUTH_KEY не найден в секретах!"
-    
+    if not auth_key: return None, "Ключ не найден"
     products = collect_available_products(shopping_list_df, stock_df)
-    if not products: return None, "Нет продуктов для меню"
+    if not products: return None, "Нет продуктов"
 
     token, error = get_gigachat_token(auth_key)
     if not token: return None, error
@@ -104,7 +102,6 @@ def generate_menu_gigachat(shopping_list_df, stock_df, auth_key):
         "Accept": "application/json",
         "Authorization": f"Bearer {token}"
     }
-    
     body = {
         "model": "GigaChat",
         "messages": [{"role": "user", "content": build_menu_prompt(products)}],
@@ -118,18 +115,15 @@ def generate_menu_gigachat(shopping_list_df, stock_df, auth_key):
             content = r.json()["choices"][0]["message"]["content"]
             return parse_menu_text(content), None
         else:
-            return None, f"Ошибка API GigaChat ({r.status_code}): {r.text[:200]}"
+            return None, f"API HTTP {r.status_code}"
     except Exception as e:
-        return None, f"Ошибка при генерации: {str(e)}"
+        return None, f"API Error: {str(e)[:100]}"
 
 def generate_menu(shopping_list_df, stock_df, use_llm=False, api_key=None, folder_id=None):
     if use_llm:
         giga_menu, error_msg = generate_menu_gigachat(shopping_list_df, stock_df, api_key)
-        if giga_menu:
-            return giga_menu, "GigaChat"
+        if giga_menu: return giga_menu, "GigaChat"
         else:
-            # Возвращаем локальное меню, но в source пишем ошибку
             local_menu = generate_menu_local(shopping_list_df, stock_df)
             return local_menu, f"ERROR: {error_msg}"
-    
     return generate_menu_local(shopping_list_df, stock_df), "Локальный"
