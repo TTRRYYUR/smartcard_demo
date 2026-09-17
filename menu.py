@@ -1,6 +1,7 @@
 import requests
 
-YANDEX_LLM_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_MODEL = "deepseek-chat"
 
 
 def collect_available_products(shopping_list_df, stock_df):
@@ -72,10 +73,10 @@ def generate_menu_local(shopping_list_df, stock_df):
 
 
 def build_menu_prompt(products):
-    """Собирает улучшенный промпт для YandexGPT (с КБЖУ у блюд)."""
+    """Собирает промпт для DeepSeek (с КБЖУ у блюд)."""
     products_text = "\n".join([f"- {p}" for p in products])
 
-    prompt = f"""Ты — помощник по питанию.
+    prompt = f"""Ты — помощник по питанию. Отвечай только на русском языке.
 
 У пользователя есть следующие продукты:
 {products_text}
@@ -105,10 +106,7 @@ def build_menu_prompt(products):
 
 
 def parse_menu_text(menu_text):
-    """
-    Парсит текстовый ответ от YandexGPT в структурированное меню.
-    Блюда теперь могут содержать КБЖУ и пояснение — берём всю строку после двоеточия.
-    """
+    """Парсит текстовый ответ от DeepSeek в структурированное меню."""
     menu = []
 
     lines = menu_text.strip().split('\n')
@@ -151,12 +149,12 @@ def parse_menu_text(menu_text):
     return menu
 
 
-def generate_menu_yandex(shopping_list_df, stock_df, api_key, folder_id):
+def generate_menu_deepseek(shopping_list_df, stock_df, api_key):
     """
-    Генерирует меню через YandexGPT.
+    Генерирует меню через DeepSeek.
     Если что-то пошло не так, возвращает None.
     """
-    if not api_key or not folder_id:
+    if not api_key:
         return None
 
     products = collect_available_products(shopping_list_df, stock_df)
@@ -165,44 +163,37 @@ def generate_menu_yandex(shopping_list_df, stock_df, api_key, folder_id):
         return None
 
     headers = {
-        "Authorization": f"Api-Key {api_key}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
 
     body = {
-        "modelUri": f"gpt://{folder_id}/yandexgpt-lite/latest",
-        "completionOptions": {
-            "stream": False,
-            "temperature": 0.6,
-            "maxTokens": "2000"
-        },
+        "model": DEEPSEEK_MODEL,
         "messages": [
-            {"role": "user", "text": build_menu_prompt(products)}
-        ]
+            {"role": "user", "content": build_menu_prompt(products)}
+        ],
+        "temperature": 0.7,
+        "max_tokens": 2000
     }
 
     try:
-        response = requests.post(
-            YANDEX_LLM_URL,
-            headers=headers,
-            json=body,
-            timeout=20
-        )
+        response = requests.post(DEEPSEEK_URL, headers=headers, json=body, timeout=30)
     except Exception as e:
-        print(f"Нет связи с YandexGPT: {e}")
+        print(f"Нет связи с DeepSeek: {e}")
         return None
 
     if response.status_code != 200:
-        print(f"Ошибка YandexGPT: {response.status_code} {response.text}")
+        print(f"Ошибка DeepSeek: {response.status_code} {response.text}")
         return None
 
     data = response.json()
-    alternatives = data.get("result", {}).get("alternatives", [])
 
-    if not alternatives:
+    choices = data.get("choices", [])
+
+    if not choices:
         return None
 
-    menu_text = alternatives[0].get("message", {}).get("text")
+    menu_text = choices[0].get("message", {}).get("content")
 
     if not menu_text:
         return None
@@ -213,18 +204,17 @@ def generate_menu_yandex(shopping_list_df, stock_df, api_key, folder_id):
 def generate_menu(shopping_list_df, stock_df, use_llm=False, api_key=None, folder_id=None):
     """
     Главная функция генерации меню.
-    Сначала пробуем YandexGPT, если не вышло - локальные правила.
+    Сначала пробуем DeepSeek, если не вышло - локальные правила.
     """
     if use_llm:
-        yandex_menu = generate_menu_yandex(
+        deepseek_menu = generate_menu_deepseek(
             shopping_list_df,
             stock_df,
-            api_key,
-            folder_id
+            api_key
         )
 
-        if yandex_menu:
-            return yandex_menu, "YandexGPT"
+        if deepseek_menu:
+            return deepseek_menu, "DeepSeek"
 
     local_menu = generate_menu_local(shopping_list_df, stock_df)
     return local_menu, "Локальный"
