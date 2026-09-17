@@ -1,4 +1,4 @@
-\import pandas as pd
+import pandas as pd
 
 from db_service import get_products, get_stock
 from predictor import get_history_scores, predict_finished_products
