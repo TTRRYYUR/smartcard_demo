@@ -157,4 +157,133 @@ def make_item(row, quantity, reason):
         'quantity': float(quantity),
         'price': price,
         'total': price * quantity,
-        'cal
+        'calories': row['calories'] * quantity,
+        'protein': row['protein'] * quantity,
+        'fat': row['fat'] * quantity,
+        'carbs': row['carbs'] * quantity,
+        'reason': reason,
+        'priority': 1,
+        'estimated_price': price * quantity
+    }
+
+
+def scale_up_basket(selected, remaining_budget):
+    """
+    Распределяет оставшийся бюджет на увеличение количества
+    ходовых товаров. Возвращает обновлённый список и новый остаток.
+    """
+    if remaining_budget <= 0:
+        return selected, remaining_budget
+
+    # Индексы позиций, которые можно масштабировать
+    scalable_indices = [
+        i for i, item in enumerate(selected)
+        if item['name'] in SCALABLE_PRODUCTS
+    ]
+
+    if not scalable_indices:
+        return selected, remaining_budget
+
+    # Добавляем по кругу по 1 штуке, пока хватает бюджета и не достигли лимита
+    cursor = 0
+
+    while remaining_budget > 0 and cursor < len(scalable_indices) * MAX_QUANTITY_PER_PRODUCT:
+        idx = scalable_indices[cursor % len(scalable_indices)]
+        item = selected[idx]
+
+        if item['quantity'] >= MAX_QUANTITY_PER_PRODUCT:
+            cursor += 1
+            continue
+
+        unit_price = item['price']
+
+        if unit_price <= 0 or remaining_budget < unit_price:
+            cursor += 1
+            continue
+
+        # Увеличиваем количество на 1
+        new_quantity = item['quantity'] + 1
+        selected[idx] = make_item_from_existing(item, new_quantity)
+
+        remaining_budget -= unit_price
+        cursor += 1
+
+    return selected, remaining_budget
+
+
+def make_item_from_existing(item, new_quantity):
+    """Пересобирает позицию из уже существующей с новым количеством."""
+    unit_price = item['price'] / item['quantity'] if item['quantity'] > 0 else item['price']
+    unit_calories = item['calories'] / item['quantity'] if item['quantity'] > 0 else item['calories']
+    unit_protein = item['protein'] / item['quantity'] if item['quantity'] > 0 else item['protein']
+    unit_fat = item['fat'] / item['quantity'] if item['quantity'] > 0 else item['fat']
+    unit_carbs = item['carbs'] / item['quantity'] if item['quantity'] > 0 else item['carbs']
+
+    return {
+        'product_id': item['product_id'],
+        'name': item['name'],
+        'category': item['category'],
+        'unit': item['unit'],
+        'quantity': float(new_quantity),
+        'price': unit_price,
+        'total': unit_price * new_quantity,
+        'calories': unit_calories * new_quantity,
+        'protein': unit_protein * new_quantity,
+        'fat': unit_fat * new_quantity,
+        'carbs': unit_carbs * new_quantity,
+        'reason': item['reason'],
+        'priority': item['priority'],
+        'estimated_price': unit_price * new_quantity
+    }
+
+
+def build_shopping_list(user_id, budget):
+    """
+    Главная функция: собирает список покупок в рамках бюджета.
+    Сначала набирает базовую корзину, потом догружает количество
+    ходовых товаров на оставшийся бюджет.
+    """
+    products_df = get_products()
+    stock_df = get_stock(user_id)
+
+    history_scores = get_history_scores(user_id)
+    finished_products = predict_finished_products(user_id)
+
+    if products_df.empty:
+        return pd.DataFrame(), 0.0, {}
+
+    scores_df = calculate_product_scores(products_df, stock_df, history_scores)
+    scores_df = scores_df.sort_values('final_score', ascending=False)
+
+    # --- Этап 1: базовая корзина (по 1 штуке, пока хватает бюджета) ---
+    selected = []
+    total_price = 0.0
+
+    for _, row in scores_df.iterrows():
+        price = row['price']
+
+        if total_price + price <= budget:
+            reason = build_reason(row, finished_products)
+            selected.append(make_item(row, 1, reason))
+            total_price += price
+
+    if not selected:
+        return pd.DataFrame(), 0.0, {}
+
+    # --- Этап 2: догрузка количества ходовых товаров на остаток ---
+    remaining_budget = budget - total_price
+    selected, remaining_budget = scale_up_basket(selected, remaining_budget)
+
+    result_df = pd.DataFrame(selected)
+
+    # Итоговая цена после догрузки
+    final_total = result_df['total'].sum()
+
+    nutrition = {
+        'total_calories': result_df['calories'].sum(),
+        'total_protein': result_df['protein'].sum(),
+        'total_fat': result_df['fat'].sum(),
+        'total_carbs': result_df['carbs'].sum()
+    }
+
+    return result_df, final_total, nutrition
